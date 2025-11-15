@@ -1,0 +1,51 @@
+from picamera2 import Picamera2
+import torch
+import cv2
+import numpy as np
+from torchvision.transforms import Compose, Resize, ToTensor, Normalize
+from PIL import Image
+
+# === MiDaS ?? ?? (???? MiDaS_small ??) ===
+model_type = "MiDaS_small"  # ?? ??!
+midas = torch.hub.load("intel-isl/MiDaS", model_type)
+midas.to("cpu").eval()
+
+# === Transform ?? ===
+midas_transforms = torch.hub.load("intel-isl/MiDaS", "transforms")
+transform = midas_transforms.small_transform if model_type == "MiDaS_small" else midas_transforms.dpt_transform
+
+# === Picamera2 ?? ===
+picam2 = Picamera2()
+picam2.preview_configuration.main.size = (320, 240)  # ?? ?? ??? ??
+picam2.preview_configuration.main.format = "RGB888"
+picam2.configure("preview")
+picam2.start()
+
+while True:
+    frame = picam2.capture_array()
+    image_rgb = cv2.rotate(frame, cv2.ROTATE_180)  # ??? ??
+
+    # PIL ???? ?? ? transform
+    input_image = Image.fromarray(image_rgb)
+    input_tensor = transform(input_image).unsqueeze(0).to("cpu")
+
+    with torch.no_grad():
+        prediction = midas(input_tensor)
+        prediction = torch.nn.functional.interpolate(
+            prediction.unsqueeze(1),
+            size=image_rgb.shape[:2],
+            mode="bicubic",
+            align_corners=False,
+        ).squeeze()
+
+    # Depth Map ??? ? ???
+    depth_map = prediction.cpu().numpy()
+    depth_normalized = cv2.normalize(depth_map, None, 0, 255, cv2.NORM_MINMAX)
+    depth_colored = cv2.applyColorMap(depth_normalized.astype(np.uint8), cv2.COLORMAP_INFERNO)
+
+    cv2.imshow("Depth Map (MiDaS + Picamera2)", depth_colored)
+
+    if cv2.waitKey(1) & 0xFF == ord('q'):
+        break
+
+cv2.destroyAllWindows()
